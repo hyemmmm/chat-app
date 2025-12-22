@@ -1,4 +1,4 @@
-# Next.js Chat App (Setup)
+# Next.js Chat App
 
 ## Tech Stack
 
