@@ -93,7 +93,7 @@ export function useChat(nickname: string) {
     // 서버가 브로드캐스트 해주면 onmessage에서 받아서 처리.
     wsRef.current.send(
       JSON.stringify({
-        type: "send_message", // 서버가 이 타입을 처리해야 함
+        type: "send_message",
         roomId: "lobby",
         nickname,
         text,
