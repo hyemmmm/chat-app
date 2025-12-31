@@ -89,7 +89,6 @@ export function useChat(nickname: string) {
       return;
     }
 
-    // 로컬 상태 업데이트(setState)를 하지 않고, 서버로 전송만 함!
     // 서버가 브로드캐스트 해주면 onmessage에서 받아서 처리.
     wsRef.current.send(
       JSON.stringify({
