@@ -1,7 +1,11 @@
 import { WebSocketServer, WebSocket } from "ws";
 
-type ClientToServer = { type: "join_room"; roomId: string; nickname: string };
+// 1. 클라이언트가 보내는 메시지 타입 정의 (send_message 추가)
+type ClientToServer =
+  | { type: "join_room"; roomId: string; nickname: string }
+  | { type: "send_message"; roomId: string; nickname: string; text: string }; // [NEW]
 
+// 2. 서버가 클라이언트에게 보내는 메시지 타입 정의 (message 추가)
 type ServerToClient =
   | { type: "room_state"; roomId: string; members: string[] }
   | {
@@ -11,15 +15,21 @@ type ServerToClient =
       members: string[];
     }
   | { type: "member_left"; roomId: string; nickname: string; members: string[] }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | {
+      type: "message";
+      roomId: string;
+      id: number;
+      sender: string;
+      text: string;
+      timestamp: string;
+    };
 
 type RoomId = string;
 
 const wss = new WebSocketServer({ port: 8080 });
 
-// roomId -> set of sockets
 const roomSockets = new Map<RoomId, Set<WebSocket>>();
-// socket -> { roomId, nickname }
 const socketMeta = new Map<WebSocket, { roomId: string; nickname: string }>();
 
 function safeSend(ws: WebSocket, payload: ServerToClient) {
@@ -44,7 +54,6 @@ function getMembers(roomId: string): string[] {
 }
 
 function joinRoom(ws: WebSocket, roomId: string, nickname: string) {
-  // 기존 방이 있으면 정리
   leaveRoom(ws);
 
   socketMeta.set(ws, { roomId, nickname });
@@ -53,10 +62,8 @@ function joinRoom(ws: WebSocket, roomId: string, nickname: string) {
   sockets.add(ws);
   roomSockets.set(roomId, sockets);
 
-  // 1) 입장자에게 현재 상태 전달
   safeSend(ws, { type: "room_state", roomId, members: getMembers(roomId) });
 
-  // 2) 방 전체에 "누가 들어옴" 브로드캐스트
   broadcast(roomId, {
     type: "member_joined",
     roomId,
@@ -78,7 +85,6 @@ function leaveRoom(ws: WebSocket) {
   sockets.delete(ws);
   if (sockets.size === 0) roomSockets.delete(roomId);
 
-  // 방 전체에 "누가 나감" 브로드캐스트
   broadcast(roomId, {
     type: "member_left",
     roomId,
@@ -91,12 +97,13 @@ wss.on("connection", (ws) => {
   ws.on("message", (data) => {
     let msg: ClientToServer;
     try {
-      msg = JSON.parse(data.toString());
+      msg = JSON.parse(data.toString()) as ClientToServer;
     } catch {
       safeSend(ws, { type: "error", message: "Invalid JSON" });
       return;
     }
 
+    // 1) 방 입장 처리
     if (msg.type === "join_room") {
       const roomId = msg.roomId?.trim();
       const nickname = msg.nickname?.trim();
@@ -111,6 +118,34 @@ wss.on("connection", (ws) => {
       }
 
       joinRoom(ws, roomId, nickname);
+      return;
+    }
+
+    // 2) 메시지 전송 처리
+    if (msg.type === "send_message") {
+      const meta = socketMeta.get(ws);
+
+      // 방에 입장하지 않은 상태로 메시지를 보내려 할 때
+      if (!meta) {
+        return safeSend(ws, { type: "error", message: "Join room first" });
+      }
+
+      if (!msg.text || !msg.text.trim()) {
+        return; // 빈 메시지 무시
+      }
+
+      // 서버 시간을 찍어서 브로드캐스트
+      broadcast(meta.roomId, {
+        type: "message",
+        roomId: meta.roomId,
+        id: Date.now(),
+        sender: meta.nickname, // 위조 방지를 위해 서버가 알고 있는 닉네임 사용
+        text: msg.text.trim(),
+        timestamp: new Date().toLocaleTimeString("ko-KR", {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      });
       return;
     }
 

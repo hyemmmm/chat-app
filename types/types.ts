@@ -14,4 +14,12 @@ export type ServerToClient =
       members: string[];
     }
   | { type: "member_left"; roomId: string; nickname: string; members: string[] }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | {
+      type: "message";
+      roomId: string;
+      id: number;
+      sender: string;
+      text: string;
+      timestamp: string;
+    };
