@@ -51,6 +51,13 @@ export function useChat(nickname: string) {
         // [기존] 멤버 입장/퇴장/상태 관리
         if ("members" in msg) {
           setMembers(msg.members);
+          return;
+        }
+
+        // ✅ 재접속/입장 직후: 최근 메시지 뿌려주기
+        if (msg.type === "history") {
+          setMessages(msg.messages);
+          return;
         }
 
         // 실시간 메시지 수신 처리
@@ -61,7 +68,12 @@ export function useChat(nickname: string) {
             text: msg.text,
             timestamp: msg.timestamp,
           };
-          setMessages((prev) => [...prev, newMessage]);
+
+          // (선택) 중복 방지
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === newMessage.id)) return prev;
+            return [...prev, newMessage];
+          });
         }
 
         if (msg.type === "error") {
@@ -96,7 +108,7 @@ export function useChat(nickname: string) {
         roomId: "lobby",
         nickname,
         text,
-      })
+      }),
     );
   };
 

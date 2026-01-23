@@ -1,3 +1,4 @@
+import { Message, ServerToClient } from "@/types/types";
 import { WebSocketServer, WebSocket } from "ws";
 
 // 1. 클라이언트가 보내는 메시지 타입 정의 (send_message 추가)
@@ -5,32 +6,19 @@ type ClientToServer =
   | { type: "join_room"; roomId: string; nickname: string }
   | { type: "send_message"; roomId: string; nickname: string; text: string }; // [NEW]
 
-// 2. 서버가 클라이언트에게 보내는 메시지 타입 정의 (message 추가)
-type ServerToClient =
-  | { type: "room_state"; roomId: string; members: string[] }
-  | {
-      type: "member_joined";
-      roomId: string;
-      nickname: string;
-      members: string[];
-    }
-  | { type: "member_left"; roomId: string; nickname: string; members: string[] }
-  | { type: "error"; message: string }
-  | {
-      type: "message";
-      roomId: string;
-      id: number;
-      sender: string;
-      text: string;
-      timestamp: string;
-    };
-
 type RoomId = string;
 
 const wss = new WebSocketServer({ port: 8080 });
 
 const roomSockets = new Map<RoomId, Set<WebSocket>>();
 const socketMeta = new Map<WebSocket, { roomId: string; nickname: string }>();
+
+// ✅ room별 메시지 히스토리(메모리 저장)
+const roomHistory = new Map<RoomId, Message[]>();
+const HISTORY_LIMIT = 200;
+
+// ✅ id 발급(단순 증가; Date.now()보다 중복/정렬 제어가 쉬움)
+let nextMessageId = 1;
 
 function safeSend(ws: WebSocket, payload: ServerToClient) {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
@@ -53,6 +41,16 @@ function getMembers(roomId: string): string[] {
   return [...members].sort();
 }
 
+function getHistory(roomId: string): Message[] {
+  return roomHistory.get(roomId) ?? [];
+}
+
+function pushHistory(roomId: string, message: Message) {
+  const prev = roomHistory.get(roomId) ?? [];
+  const next = [...prev, message].slice(-HISTORY_LIMIT);
+  roomHistory.set(roomId, next);
+}
+
 function joinRoom(ws: WebSocket, roomId: string, nickname: string) {
   leaveRoom(ws);
 
@@ -70,6 +68,15 @@ function joinRoom(ws: WebSocket, roomId: string, nickname: string) {
     nickname,
     members: getMembers(roomId),
   });
+
+  // ✅ 핵심: 입장 직후, 해당 클라이언트에게만 히스토리 전달
+  safeSend(ws, {
+    type: "history",
+    roomId,
+    messages: getHistory(roomId),
+  });
+
+  console.log("[send history]", roomId, getHistory(roomId).length);
 }
 
 function leaveRoom(ws: WebSocket) {
@@ -130,21 +137,27 @@ wss.on("connection", (ws) => {
         return safeSend(ws, { type: "error", message: "Join room first" });
       }
 
-      if (!msg.text || !msg.text.trim()) {
-        return; // 빈 메시지 무시
-      }
+      const text = msg.text?.trim();
+      if (!text) return;
 
-      // 서버 시간을 찍어서 브로드캐스트
-      broadcast(meta.roomId, {
-        type: "message",
-        roomId: meta.roomId,
-        id: Date.now(),
-        sender: meta.nickname, // 위조 방지를 위해 서버가 알고 있는 닉네임 사용
-        text: msg.text.trim(),
+      const message: Message = {
+        id: nextMessageId++,
+        sender: meta.nickname,
+        text,
         timestamp: new Date().toLocaleTimeString("ko-KR", {
           hour: "2-digit",
           minute: "2-digit",
         }),
+      };
+
+      // ✅ 핵심: 저장
+      pushHistory(meta.roomId, message);
+
+      // ✅ 저장된 걸 그대로 브로드캐스트
+      broadcast(meta.roomId, {
+        type: "message",
+        roomId: meta.roomId,
+        ...message,
       });
       return;
     }
