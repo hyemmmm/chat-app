@@ -5,11 +5,13 @@ import { Message } from "@/types/types";
 interface MessageListProps {
   messages: Message[];
   currentUser: string;
+  onRetry?: (clientId: string) => void; // ✅ 추가
 }
 
 export default function MessageList({
   messages,
   currentUser,
+  onRetry,
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -19,15 +21,38 @@ export default function MessageList({
 
   return (
     <ChatWindow ref={scrollRef}>
-      {messages.map((msg) => (
-        <MessageBubble key={msg.id} isMe={msg.sender === currentUser}>
-          <SenderName>{msg.sender}</SenderName>
-          <BubbleContent>
-            <Text>{msg.text}</Text>
-            <Time>{msg.timestamp}</Time>
-          </BubbleContent>
-        </MessageBubble>
-      ))}
+      {messages.map((msg) => {
+        const isMe = msg.sender === currentUser;
+        const status = msg.status ?? "sent";
+
+        return (
+          <MessageBubble key={msg.id ?? msg.clientId} isMe={isMe}>
+            <SenderName>{msg.sender}</SenderName>
+
+            <BubbleContent>
+              <Text>{msg.text}</Text>
+
+              <Meta>
+                <Time>{msg.timestamp}</Time>
+
+                {isMe && status === "sending" && <Badge>전송중</Badge>}
+
+                {isMe && status === "failed" && (
+                  <>
+                    <BadgeFailed>실패</BadgeFailed>
+                    <RetryButton
+                      type="button"
+                      onClick={() => onRetry?.(msg.clientId)}
+                    >
+                      재전송
+                    </RetryButton>
+                  </>
+                )}
+              </Meta>
+            </BubbleContent>
+          </MessageBubble>
+        );
+      })}
     </ChatWindow>
   );
 }
@@ -71,8 +96,33 @@ const Text = styled.div`
   word-break: break-all;
 `;
 
+const Meta = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+`;
+
 const Time = styled.span`
   font-size: 0.65rem;
   color: #bbb;
   white-space: nowrap;
+`;
+
+const Badge = styled.span`
+  font-size: 0.65rem;
+  color: #888;
+  white-space: nowrap;
+`;
+
+const BadgeFailed = styled(Badge)`
+  color: #d32f2f;
+`;
+
+const RetryButton = styled.button`
+  font-size: 0.65rem;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+  background: white;
+  cursor: pointer;
 `;

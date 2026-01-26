@@ -12,7 +12,8 @@ export default function ChatPage() {
   const searchParams = useSearchParams();
   const nickname = (searchParams.get("nickname") || "").trim();
 
-  const { messages, members, isOnline, sendMessage } = useChat(nickname);
+  const { messages, members, isOnline, sendMessage, retryMessage } =
+    useChat(nickname);
 
   if (!nickname) return null;
 
@@ -33,7 +34,11 @@ export default function ChatPage() {
       <MainLayout>
         {/* 채팅 영역 */}
         <ChatSection>
-          <MessageList messages={messages} currentUser={nickname} />
+          <MessageList
+            messages={messages}
+            currentUser={nickname}
+            onRetry={retryMessage}
+          />
           <MessageInput onSendMessage={sendMessage} isOnline={isOnline} />
         </ChatSection>
 
