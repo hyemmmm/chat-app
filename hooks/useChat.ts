@@ -1,22 +1,28 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Message, ServerToClient } from "@/types/types";
+import { ConnectionStatus, Message, ServerToClient } from "@/types/types";
+
+const MAX_RETRIES = 2; // 최대 자동 재시도 횟수
 
 export function useChat(nickname: string) {
   const router = useRouter();
 
-  // ✅ UI용 메시지로 변경
   const [messages, setMessages] = useState<Message[]>([]);
   const [members, setMembers] = useState<string[]>([]);
-  const [isOnline, setIsOnline] = useState(true);
+
+  // ✅ isOnline 대신 상세 연결 상태 관리
+  const [connectionStatus, setConnectionStatus] =
+    useState<ConnectionStatus>("disconnected");
 
   const wsRef = useRef<WebSocket | null>(null);
 
-  // ack 타임아웃 관리
+  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null); // 재연결 타이머
+  const retryCount = useRef(0); // 재시도 횟수 카운터
+
+  // ack 타임아웃 및 재전송 저장소
   const pendingTimers = useRef<Map<string, number>>(new Map());
-  // 재전송을 위해 text 저장
   const pendingText = useRef<Map<string, string>>(new Map());
 
   const clearPendingTimer = (clientId: string) => {
@@ -31,40 +37,41 @@ export function useChat(nickname: string) {
     else setMembers([nickname]);
   }, [nickname, router]);
 
-  // 2. 네트워크 상태 감지
-  useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
-    return () => {
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
-    };
-  }, []);
-
-  // 3. WebSocket 연결 및 수신 로직
-  useEffect(() => {
+  // 2. WebSocket 연결 함수 (useCallback으로 분리)
+  const connect = useCallback(() => {
     if (!nickname) return;
+
+    // 이미 연결 중이거나 연결된 상태면 스킵
+    if (
+      wsRef.current?.readyState === WebSocket.CONNECTING ||
+      wsRef.current?.readyState === WebSocket.OPEN
+    )
+      return;
+
+    // ✅ 연결 시도 시 상태 업데이트
+    setConnectionStatus("reconnecting");
 
     const ws = new WebSocket("ws://localhost:8080");
     wsRef.current = ws;
 
     ws.onopen = () => {
+      // ✅ 연결 성공
+      setConnectionStatus("connected");
       ws.send(JSON.stringify({ type: "join_room", roomId: "lobby", nickname }));
+
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      retryCount.current = 0; // 카운트 리셋
     };
 
     ws.onmessage = (evt) => {
       try {
         const msg = JSON.parse(evt.data) as ServerToClient;
 
-        // 멤버 상태
         if ("members" in msg) {
           setMembers(msg.members);
           return;
         }
 
-        // ✅ history: ServerMessage[] -> UI Message[]
         if (msg.type === "history") {
           setMessages(
             msg.messages.map((m) => ({
@@ -79,11 +86,9 @@ export function useChat(nickname: string) {
           return;
         }
 
-        // ✅ ack: 내 optimistic 메시지 확정
         if (msg.type === "ack") {
           clearPendingTimer(msg.clientMessageId);
           pendingText.current.delete(msg.clientMessageId);
-
           setMessages((prev) =>
             prev.map((m) =>
               m.clientId === msg.clientMessageId
@@ -94,16 +99,10 @@ export function useChat(nickname: string) {
           return;
         }
 
-        // ✅ message: 실시간 수신 (다른 사람 메시지)
         if (msg.type === "message") {
           setMessages((prev) => {
-            // ✅ 이미 들어온 server id면 중복 방지
             if (prev.some((m) => m.id === msg.id)) return prev;
-
-            // ✅ 내 메시지는 optimistic + ACK로만 확정(서버 echo는 무시)
             if (msg.sender === nickname) return prev;
-
-            // ✅ 다른 사람 메시지만 append
             return [
               ...prev,
               {
@@ -127,20 +126,79 @@ export function useChat(nickname: string) {
       }
     };
 
-    return () => {
-      // 타이머 정리
-      for (const t of pendingTimers.current.values()) window.clearTimeout(t);
-      pendingTimers.current.clear();
-      pendingText.current.clear();
-
-      ws.close();
+    // ✅ 연결 종료 (서버 다운, 네트워크 끊김 등)
+    ws.onclose = () => {
       wsRef.current = null;
+
+      // ✅ [재연결 전략 수정]
+      // 1회차: 0ms (즉시 재시도) -> 단순 렉인지 확인
+      // 2회차: 2000ms (2초 쉬고 재시도) -> 서버 재부팅 대기
+      const RETRY_DELAYS = [0, 2000];
+
+      if (retryCount.current < MAX_RETRIES) {
+        setConnectionStatus("reconnecting"); // 노란불 유지
+
+        const delay = RETRY_DELAYS[retryCount.current] ?? 3000;
+
+        console.log(
+          `🔄 재연결 시도 (${retryCount.current + 1}/${MAX_RETRIES}) - 대기: ${delay}ms`,
+        );
+        retryCount.current += 1;
+
+        reconnectTimerRef.current = setTimeout(() => {
+          connect();
+        }, delay);
+      } else {
+        // 🔴 모든 시도 실패 -> 빨간불 + 버튼 등장
+        console.warn("🚫 자동 재연결 실패. 수동 전환.");
+        setConnectionStatus("disconnected");
+      }
     };
-  }, [nickname, router]);
+
+    ws.onerror = (err) => {
+      console.error("WebSocket Error:", err);
+      ws.close(); // 에러 발생 시 닫고 onclose 트리거
+    };
+  }, [nickname]);
+
+  // ✅ 수동 재연결 (버튼 클릭용)
+  const manualReconnect = () => {
+    retryCount.current = 0; // 카운트 초기화가 핵심
+    connect();
+  };
+
+  // 3. 최초 진입 시 및 윈도우 네트워크 상태 감지
+  useEffect(() => {
+    connect(); // 최초 연결
+
+    // 브라우저 자체가 오프라인이 되면 즉시 disconnected 처리
+    const handleOffline = () => {
+      if (wsRef.current) wsRef.current.close();
+      setConnectionStatus("disconnected");
+    };
+
+    // 브라우저가 온라인으로 돌아오면 즉시 재연결 시도
+    const handleOnline = () => {
+      connect();
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+
+      // 컴포넌트 언마운트 시 정리
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (wsRef.current) wsRef.current.close();
+
+      for (const t of pendingTimers.current.values()) window.clearTimeout(t);
+    };
+  }, [connect]);
 
   const startFailTimer = (clientId: string) => {
     clearPendingTimer(clientId);
-
     const t = window.setTimeout(() => {
       setMessages((prev) =>
         prev.map((m) =>
@@ -148,13 +206,12 @@ export function useChat(nickname: string) {
         ),
       );
     }, 3000);
-
     pendingTimers.current.set(clientId, t);
   };
 
-  // 4. 메시지 전송 핸들러 (optimistic + ack timeout)
   const sendMessage = (text: string) => {
-    if (!text.trim() || !isOnline) return;
+    // ✅ 연결 상태 체크 강화
+    if (!text.trim() || connectionStatus !== "connected") return;
 
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -168,16 +225,13 @@ export function useChat(nickname: string) {
       minute: "2-digit",
     });
 
-    // ✅ UI에 먼저 추가
     setMessages((prev) => [
       ...prev,
       { clientId, sender: nickname, text, timestamp, status: "sending" },
     ]);
 
-    // 재전송용 저장
     pendingText.current.set(clientId, text);
 
-    // ✅ 전송
     ws.send(
       JSON.stringify({
         type: "send_message",
@@ -188,14 +242,12 @@ export function useChat(nickname: string) {
       }),
     );
 
-    // ✅ ack 안 오면 failed
     startFailTimer(clientId);
   };
 
-  // ✅ 재전송
   const retryMessage = (clientId: string) => {
     const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return; // 여기도 체크
 
     const text = pendingText.current.get(clientId);
     if (!text) return;
@@ -212,12 +264,20 @@ export function useChat(nickname: string) {
         roomId: "lobby",
         nickname,
         text,
-        clientMessageId: clientId, // ✅ 같은 id로 재전송(중복 방지)
+        clientMessageId: clientId,
       }),
     );
 
     startFailTimer(clientId);
   };
 
-  return { messages, members, isOnline, sendMessage, retryMessage };
+  // ✅ connectionStatus 리턴 추가
+  return {
+    messages,
+    members,
+    connectionStatus,
+    sendMessage,
+    retryMessage,
+    manualReconnect,
+  };
 }

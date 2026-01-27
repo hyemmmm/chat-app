@@ -1,20 +1,21 @@
+import { ConnectionStatus } from "@/types/types";
 import styled from "@emotion/styled";
 
 interface ChatHeaderProps {
   nickname: string;
   memberCount: number;
-  isOnline: boolean;
+  connectionStatus: ConnectionStatus; // ✅ 변경
 }
 
 export default function ChatHeader({
   nickname,
   memberCount,
-  isOnline,
+  connectionStatus,
 }: ChatHeaderProps) {
   return (
     <Header>
       <HeaderLeft>
-        <StatusDot isOnline={isOnline} />
+        <StatusDot status={connectionStatus} />
         <Title>{nickname}님의 채팅방</Title>
       </HeaderLeft>
       <UserCountBadge>접속 중: {memberCount}명</UserCountBadge>
@@ -37,11 +38,23 @@ const HeaderLeft = styled.div`
   gap: 10px;
 `;
 
-const StatusDot = styled.div<{ isOnline: boolean }>`
+// ✅ 상태에 따른 색상 매핑
+const StatusDot = styled.div<{ status: ConnectionStatus }>`
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background-color: ${(props) => (props.isOnline ? "#4caf50" : "#f44336")};
+  background-color: ${(props) => {
+    switch (props.status) {
+      case "connected":
+        return "#4caf50"; // 초록 (연결됨)
+      case "reconnecting":
+        return "#ff9800"; // 주황 (재연결 중)
+      case "disconnected":
+        return "#f44336"; // 빨강 (끊김)
+      default:
+        return "#9e9e9e"; // 회색 (알수없음)
+    }
+  }};
 `;
 
 const Title = styled.h2`

@@ -47,3 +47,5 @@ export type ServerToClient =
       clientMessageId: string;
       serverMessageId: number;
     };
+
+export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
